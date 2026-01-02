@@ -1,0 +1,5 @@
+# Mac FS
+.DS_Store
+
+# binary
+out
