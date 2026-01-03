@@ -28,6 +28,31 @@ type errorBody struct {
 	Error string `json:"error"`
 }
 
+func cleanChirp(msg string) string {
+	replacement := "****"
+	blockList := []string{"kerfuffle", "fornax", "sharbert"}
+	result := msg
+	for _, old := range blockList {
+		re := regexp.MustCompile(`(?i)` + regexp.QuoteMeta(old))
+		result = re.ReplaceAllString(result, replacement)
+	}
+	return result
+}
+
+func processError(msg string, code int, w http.ResponseWriter) {
+	respErr := errorBody{
+		Error: msg,
+	}
+	d, err := json.Marshal(respErr)
+	if err != nil {
+		fmt.Printf("error marshalling JSON: %v", err)
+		w.WriteHeader(500)
+		return
+	}
+	w.WriteHeader(code)
+	w.Write(d)
+}
+
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
@@ -105,37 +130,17 @@ func (c *apiConfig) handlerCreateUser(w http.ResponseWriter, req *http.Request) 
 	w.Write(d)
 }
 
-func cleanChirp(msg string) string {
-	replacement := "****"
-	blockList := []string{"kerfuffle", "fornax", "sharbert"}
-	result := msg
-	for _, old := range blockList {
-		re := regexp.MustCompile(`(?i)` + regexp.QuoteMeta(old))
-		result = re.ReplaceAllString(result, replacement)
-	}
-	return result
-}
-
-func processError(msg string, code int, w http.ResponseWriter) {
-	respErr := errorBody{
-		Error: msg,
-	}
-	d, err := json.Marshal(respErr)
-	if err != nil {
-		fmt.Printf("error marshalling JSON: %v", err)
-		w.WriteHeader(500)
-		return
-	}
-	w.WriteHeader(code)
-	w.Write(d)
-}
-
-func handlerValidateChirp(w http.ResponseWriter, req *http.Request) {
+func (c *apiConfig) handlerCreateChirp(w http.ResponseWriter, req *http.Request) {
 	type requestBody struct {
-		Body string `json:"body"`
+		Body   string    `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
 	}
-	type successResp struct {
-		CleanedBody string `json:"cleaned_body"`
+	type responseBody struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body      string    `json:"body"`
+		UserID    uuid.UUID `json:"user_id"`
 	}
 	var body requestBody
 	dec := json.NewDecoder(req.Body)
@@ -147,8 +152,31 @@ func handlerValidateChirp(w http.ResponseWriter, req *http.Request) {
 		processError("Chirp is too long", 400, w)
 		return
 	}
-	respBody := successResp{
-		CleanedBody: cleanChirp(body.Body),
+
+	u, err := c.db.GetUserByID(req.Context(), body.UserID)
+	if err != nil {
+		errMsg := fmt.Sprintf("Something went wrong while retrieving the referenced user: %v", err)
+		processError(errMsg, 500, w)
+		return
+	}
+
+	chirpParams := database.CreateChirpParams{
+		Body:   cleanChirp(body.Body),
+		UserID: u.ID,
+	}
+	ch, err := c.db.CreateChirp(req.Context(), chirpParams)
+	if err != nil {
+		errMsg := fmt.Sprintf("Something went wrong while creating chirp: %v", err)
+		processError(errMsg, 500, w)
+		return
+	}
+
+	respBody := responseBody{
+		ID:        ch.ID,
+		CreatedAt: ch.CreatedAt,
+		UpdatedAt: ch.UpdatedAt,
+		Body:      ch.Body,
+		UserID:    ch.UserID,
 	}
 	d, err := json.Marshal(respBody)
 	if err != nil {
@@ -156,7 +184,8 @@ func handlerValidateChirp(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(500)
 		return
 	}
-	w.WriteHeader(200)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
 	w.Write(d)
 }
 
@@ -192,8 +221,8 @@ func main() {
 	mux.Handle("/app/", config.middlewareMetricsInc(fileserverHandler))
 
 	mux.HandleFunc("GET /api/healthz", handlerHealth)
-	mux.HandleFunc("POST /api/validate_chirp", handlerValidateChirp)
 	mux.HandleFunc("POST /api/users", config.handlerCreateUser)
+	mux.HandleFunc("POST /api/chirps", config.handlerCreateChirp)
 
 	mux.HandleFunc("GET /admin/metrics", config.handlerMetric)
 	mux.HandleFunc("POST /admin/reset", config.handlerReset)

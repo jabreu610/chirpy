@@ -8,5 +8,10 @@ VALUES (
 )
 RETURNING *;
 
+-- name: GetUserByID :one
+SELECT *
+FROM users
+WHERE id = $1;
+
 -- name: UsersDBReset :exec
 DELETE FROM users;
