@@ -9,7 +9,9 @@ import (
 	"os"
 	"regexp"
 	"sync/atomic"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/jabreu610/chirpy/internal/database"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
@@ -29,6 +31,7 @@ type errorBody struct {
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
+	env            string
 }
 
 func (c *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -45,10 +48,61 @@ func (c *apiConfig) handlerMetric(w http.ResponseWriter, _ *http.Request) {
 	io.WriteString(w, msg)
 }
 
-func (c *apiConfig) handlerMetricReset(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+func (c *apiConfig) handlerReset(w http.ResponseWriter, req *http.Request) {
+	if c.env != "dev" {
+		processError("Fobidden", 403, w)
+		return
+	}
+	if err := c.db.UsersDBReset(req.Context()); err != nil {
+		errMsg := fmt.Sprintf("Error occured while processing reset: %v", err)
+		processError(errMsg, 500, w)
+		return
+	}
 	c.fileserverHits.Swap(0)
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
+}
+
+func (c *apiConfig) handlerCreateUser(w http.ResponseWriter, req *http.Request) {
+	type requestBody struct {
+		Email string `json:"email"`
+	}
+
+	var reqBody requestBody
+	dec := json.NewDecoder(req.Body)
+	if err := dec.Decode(&reqBody); err != nil {
+		processError("Something went wrong while processing request body", 400, w)
+		return
+	}
+
+	u, err := c.db.CreateUser(req.Context(), reqBody.Email)
+	if err != nil {
+		errMsg := fmt.Sprintf("Unable to create user: %v", err)
+		processError(errMsg, 500, w)
+		return
+	}
+
+	type respBody struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
+	}
+	out := respBody{
+		ID:        u.ID,
+		CreatedAt: u.CreatedAt,
+		UpdatedAt: u.UpdatedAt,
+		Email:     u.Email,
+	}
+	d, err := json.Marshal(out)
+	if err != nil {
+		errMsg := fmt.Sprintf("Something went wrong while processing repsone: %v", err)
+		processError(errMsg, 500, w)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	w.Write(d)
 }
 
 func cleanChirp(msg string) string {
@@ -62,7 +116,7 @@ func cleanChirp(msg string) string {
 	return result
 }
 
-func processError(msg string, w http.ResponseWriter) {
+func processError(msg string, code int, w http.ResponseWriter) {
 	respErr := errorBody{
 		Error: msg,
 	}
@@ -72,7 +126,7 @@ func processError(msg string, w http.ResponseWriter) {
 		w.WriteHeader(500)
 		return
 	}
-	w.WriteHeader(400)
+	w.WriteHeader(code)
 	w.Write(d)
 }
 
@@ -86,11 +140,11 @@ func handlerValidateChirp(w http.ResponseWriter, req *http.Request) {
 	var body requestBody
 	dec := json.NewDecoder(req.Body)
 	if err := dec.Decode(&body); err != nil {
-		processError("Something went wrong", w)
+		processError("Something went wrong", 400, w)
 		return
 	}
 	if len(body.Body) > 140 {
-		processError("Chirp is too long", w)
+		processError("Chirp is too long", 400, w)
 		return
 	}
 	respBody := successResp{
@@ -116,6 +170,10 @@ func main() {
 	config := apiConfig{}
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
+	env := os.Getenv("PLATFORM")
+
+	config.env = env
+
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		fmt.Printf("Unable to connect to database: %v\n", err)
@@ -130,10 +188,15 @@ func main() {
 		Addr:    ":8080",
 	}
 	fileserverHandler := http.StripPrefix("/app", http.FileServer(http.Dir(".")))
+
 	mux.Handle("/app/", config.middlewareMetricsInc(fileserverHandler))
+
 	mux.HandleFunc("GET /api/healthz", handlerHealth)
 	mux.HandleFunc("POST /api/validate_chirp", handlerValidateChirp)
+	mux.HandleFunc("POST /api/users", config.handlerCreateUser)
+
 	mux.HandleFunc("GET /admin/metrics", config.handlerMetric)
-	mux.HandleFunc("POST /admin/reset", config.handlerMetricReset)
+	mux.HandleFunc("POST /admin/reset", config.handlerReset)
+
 	server.ListenAndServe()
 }
