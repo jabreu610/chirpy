@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"sync/atomic"
 )
 
@@ -43,6 +44,17 @@ func (c *apiConfig) handlerMetricReset(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(200)
 }
 
+func cleanChirp(msg string) string {
+	replacement := "****"
+	blockList := []string{"kerfuffle", "fornax", "sharbert"}
+	result := msg
+	for _, old := range blockList {
+		re := regexp.MustCompile(`(?i)` + regexp.QuoteMeta(old))
+		result = re.ReplaceAllString(result, replacement)
+	}
+	return result
+}
+
 func processError(msg string, w http.ResponseWriter) {
 	respErr := errorBody{
 		Error: msg,
@@ -62,7 +74,7 @@ func handlerValidateChirp(w http.ResponseWriter, req *http.Request) {
 		Body string `json:"body"`
 	}
 	type successResp struct {
-		Valid bool `json:"valid"`
+		CleanedBody string `json:"cleaned_body"`
 	}
 	var body requestBody
 	dec := json.NewDecoder(req.Body)
@@ -75,7 +87,7 @@ func handlerValidateChirp(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	respBody := successResp{
-		Valid: true,
+		CleanedBody: cleanChirp(body.Body),
 	}
 	d, err := json.Marshal(respBody)
 	if err != nil {
