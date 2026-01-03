@@ -1,12 +1,18 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"regexp"
 	"sync/atomic"
+
+	"github.com/jabreu610/chirpy/internal/database"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 const metricsTemplate = `<html>
@@ -22,6 +28,7 @@ type errorBody struct {
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	db             *database.Queries
 }
 
 func (c *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -106,12 +113,22 @@ func handlerHealth(w http.ResponseWriter, req *http.Request) {
 }
 
 func main() {
+	config := apiConfig{}
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		fmt.Printf("Unable to connect to database: %v\n", err)
+		os.Exit(1)
+	}
+	dbQueries := database.New(db)
+	config.db = dbQueries
+
 	mux := http.NewServeMux()
 	server := http.Server{
 		Handler: mux,
 		Addr:    ":8080",
 	}
-	config := apiConfig{}
 	fileserverHandler := http.StripPrefix("/app", http.FileServer(http.Dir(".")))
 	mux.Handle("/app/", config.middlewareMetricsInc(fileserverHandler))
 	mux.HandleFunc("GET /api/healthz", handlerHealth)
