@@ -24,6 +24,14 @@ const metricsTemplate = `<html>
   </body>
 </html>`
 
+type chirpResponse struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
+}
+
 type errorBody struct {
 	Error string `json:"error"`
 }
@@ -135,13 +143,7 @@ func (c *apiConfig) handlerCreateChirp(w http.ResponseWriter, req *http.Request)
 		Body   string    `json:"body"`
 		UserID uuid.UUID `json:"user_id"`
 	}
-	type responseBody struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Body      string    `json:"body"`
-		UserID    uuid.UUID `json:"user_id"`
-	}
+
 	var body requestBody
 	dec := json.NewDecoder(req.Body)
 	if err := dec.Decode(&body); err != nil {
@@ -171,7 +173,7 @@ func (c *apiConfig) handlerCreateChirp(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	respBody := responseBody{
+	respBody := chirpResponse{
 		ID:        ch.ID,
 		CreatedAt: ch.CreatedAt,
 		UpdatedAt: ch.UpdatedAt,
@@ -186,6 +188,39 @@ func (c *apiConfig) handlerCreateChirp(w http.ResponseWriter, req *http.Request)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(201)
+	w.Write(d)
+}
+
+func (c *apiConfig) handlerGetChirps(w http.ResponseWriter, req *http.Request) {
+	var respBody []chirpResponse
+
+	ch, err := c.db.GetAllChirps(req.Context())
+	if err != nil {
+		errMsg := fmt.Sprintf("Something went wrong while retrieving chirps: %v", err)
+		processError(errMsg, 500, w)
+		return
+	}
+
+	for _, chirp := range ch {
+		entry := chirpResponse{
+			ID:        chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			Body:      chirp.Body,
+			UserID:    chirp.UserID,
+		}
+		respBody = append(respBody, entry)
+	}
+
+	d, err := json.Marshal(respBody)
+	if err != nil {
+		errMsg := fmt.Sprintf("Something went wrong while building response: %v", err)
+		processError(errMsg, 500, w)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
 	w.Write(d)
 }
 
@@ -223,6 +258,7 @@ func main() {
 	mux.HandleFunc("GET /api/healthz", handlerHealth)
 	mux.HandleFunc("POST /api/users", config.handlerCreateUser)
 	mux.HandleFunc("POST /api/chirps", config.handlerCreateChirp)
+	mux.HandleFunc("GET /api/chirps", config.handlerGetChirps)
 
 	mux.HandleFunc("GET /admin/metrics", config.handlerMetric)
 	mux.HandleFunc("POST /admin/reset", config.handlerReset)
