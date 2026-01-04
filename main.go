@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -224,6 +225,50 @@ func (c *apiConfig) handlerGetChirps(w http.ResponseWriter, req *http.Request) {
 	w.Write(d)
 }
 
+func (c *apiConfig) handlerGetChirpByID(w http.ResponseWriter, req *http.Request) {
+	chirpID := req.PathValue("chirpID")
+	if len(chirpID) < 1 {
+		errMsg := "Something went wrong handling the request, expected chirp id in request path"
+		processError(errMsg, 400, w)
+		return
+	}
+	parsedChirpID, err := uuid.Parse(chirpID)
+	if err != nil {
+		errMsg := fmt.Sprintf("Something went wrong when processing the chirp ID: %v", err)
+		processError(errMsg, 400, w)
+		return
+	}
+
+	ch, err := c.db.GetChirpByID(req.Context(), parsedChirpID)
+	if err != nil {
+		errMsg := fmt.Sprintf("Something went wrong when fetching the chirp: %v", err)
+		errorCode := 500
+		if errors.Is(err, sql.ErrNoRows) {
+			errorCode = 404
+		}
+		processError(errMsg, errorCode, w)
+		return
+	}
+
+	resp := chirpResponse{
+		ID:        ch.ID,
+		CreatedAt: ch.CreatedAt,
+		UpdatedAt: ch.UpdatedAt,
+		Body:      ch.Body,
+		UserID:    ch.UserID,
+	}
+	d, err := json.Marshal(resp)
+	if err != nil {
+		errMsg := fmt.Sprintf("Something went wrong while building the response: %v", err)
+		processError(errMsg, 500, w)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	w.Write(d)
+}
+
 func handlerHealth(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
@@ -259,6 +304,7 @@ func main() {
 	mux.HandleFunc("POST /api/users", config.handlerCreateUser)
 	mux.HandleFunc("POST /api/chirps", config.handlerCreateChirp)
 	mux.HandleFunc("GET /api/chirps", config.handlerGetChirps)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", config.handlerGetChirpByID)
 
 	mux.HandleFunc("GET /admin/metrics", config.handlerMetric)
 	mux.HandleFunc("POST /admin/reset", config.handlerReset)
