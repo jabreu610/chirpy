@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jabreu610/chirpy/internal/auth"
 	"github.com/jabreu610/chirpy/internal/database"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
@@ -31,6 +32,18 @@ type chirpResponse struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	Body      string    `json:"body"`
 	UserID    uuid.UUID `json:"user_id"`
+}
+
+type userResponseBody struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
+}
+
+type authRequestPayload struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 type errorBody struct {
@@ -98,31 +111,33 @@ func (c *apiConfig) handlerReset(w http.ResponseWriter, req *http.Request) {
 }
 
 func (c *apiConfig) handlerCreateUser(w http.ResponseWriter, req *http.Request) {
-	type requestBody struct {
-		Email string `json:"email"`
-	}
-
-	var reqBody requestBody
+	var reqBody authRequestPayload
 	dec := json.NewDecoder(req.Body)
 	if err := dec.Decode(&reqBody); err != nil {
 		processError("Something went wrong while processing request body", 400, w)
 		return
 	}
 
-	u, err := c.db.CreateUser(req.Context(), reqBody.Email)
+	h, err := auth.HashPassword(reqBody.Password)
+	if err != nil {
+		errMsg := fmt.Sprintf("Something went wrong while processing your request: %v", err)
+		processError(errMsg, 400, w)
+		return
+	}
+
+	params := database.CreateUserParams{
+		Email:          reqBody.Email,
+		HashedPassword: h,
+	}
+
+	u, err := c.db.CreateUser(req.Context(), params)
 	if err != nil {
 		errMsg := fmt.Sprintf("Unable to create user: %v", err)
 		processError(errMsg, 500, w)
 		return
 	}
 
-	type respBody struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
-	}
-	out := respBody{
+	out := userResponseBody{
 		ID:        u.ID,
 		CreatedAt: u.CreatedAt,
 		UpdatedAt: u.UpdatedAt,
@@ -136,6 +151,47 @@ func (c *apiConfig) handlerCreateUser(w http.ResponseWriter, req *http.Request) 
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(201)
+	w.Write(d)
+}
+
+func (c *apiConfig) handlerLogin(w http.ResponseWriter, req *http.Request) {
+	var reqBody authRequestPayload
+	dec := json.NewDecoder(req.Body)
+	if err := dec.Decode(&reqBody); err != nil {
+		processError("Something went wrong while processing request body", 400, w)
+		return
+	}
+
+	u, err := c.db.GetUserByEmail(req.Context(), reqBody.Email)
+	if err != nil {
+		processError("Incorrect email or password", 401, w)
+		return
+	}
+
+	isAuthenticated, err := auth.CheckPasswordHash(reqBody.Password, u.HashedPassword)
+	if err != nil {
+		processError("Incorrect email or password", 401, w)
+		return
+	}
+	if !isAuthenticated {
+		processError("Incorrect email or password", 401, w)
+		return
+	}
+
+	resp := userResponseBody{
+		ID:        u.ID,
+		CreatedAt: u.CreatedAt,
+		UpdatedAt: u.UpdatedAt,
+		Email:     u.Email,
+	}
+	d, err := json.Marshal(resp)
+	if !isAuthenticated {
+		processError("Incorrect email or password", 401, w)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
 	w.Write(d)
 }
 
@@ -302,6 +358,7 @@ func main() {
 
 	mux.HandleFunc("GET /api/healthz", handlerHealth)
 	mux.HandleFunc("POST /api/users", config.handlerCreateUser)
+	mux.HandleFunc("POST /api/login", config.handlerLogin)
 	mux.HandleFunc("POST /api/chirps", config.handlerCreateChirp)
 	mux.HandleFunc("GET /api/chirps", config.handlerGetChirps)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", config.handlerGetChirpByID)
