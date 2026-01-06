@@ -42,8 +42,9 @@ type userResponseBody struct {
 }
 
 type authRequestPayload struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email            string        `json:"email"`
+	Password         string        `json:"password"`
+	ExpiresInSeconds time.Duration `json:"expires_in_seconds"`
 }
 
 type errorBody struct {
@@ -79,6 +80,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
 	env            string
+	authSecret     string
 }
 
 func (c *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -169,23 +171,38 @@ func (c *apiConfig) handlerLogin(w http.ResponseWriter, req *http.Request) {
 	}
 
 	isAuthenticated, err := auth.CheckPasswordHash(reqBody.Password, u.HashedPassword)
-	if err != nil {
-		processError("Incorrect email or password", 401, w)
-		return
-	}
-	if !isAuthenticated {
+	if err != nil || !isAuthenticated {
 		processError("Incorrect email or password", 401, w)
 		return
 	}
 
-	resp := userResponseBody{
-		ID:        u.ID,
-		CreatedAt: u.CreatedAt,
-		UpdatedAt: u.UpdatedAt,
-		Email:     u.Email,
+	expiration := reqBody.ExpiresInSeconds * time.Second
+	if expiration == 0 {
+		expiration = 3600 * time.Second
+	}
+
+	token, err := auth.MakeJWT(u.ID, c.authSecret, expiration)
+	if err != nil {
+		processError("Incorrect email or password", 401, w)
+		return
+	}
+
+	type loginResponseBody struct {
+		userResponseBody
+		Token string `json:"token"`
+	}
+
+	resp := loginResponseBody{
+		userResponseBody: userResponseBody{
+			ID:        u.ID,
+			CreatedAt: u.CreatedAt,
+			UpdatedAt: u.UpdatedAt,
+			Email:     u.Email,
+		},
+		Token: token,
 	}
 	d, err := json.Marshal(resp)
-	if !isAuthenticated {
+	if err != nil {
 		processError("Incorrect email or password", 401, w)
 		return
 	}
@@ -197,8 +214,20 @@ func (c *apiConfig) handlerLogin(w http.ResponseWriter, req *http.Request) {
 
 func (c *apiConfig) handlerCreateChirp(w http.ResponseWriter, req *http.Request) {
 	type requestBody struct {
-		Body   string    `json:"body"`
-		UserID uuid.UUID `json:"user_id"`
+		Body string `json:"body"`
+	}
+
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		errMsg := fmt.Sprintf("Something went wrong while authenticating your request: %v", err)
+		processError(errMsg, 401, w)
+		return
+	}
+	uid, err := auth.ValidateJWT(token, c.authSecret)
+	if err != nil {
+		errMsg := fmt.Sprintf("Something went wrong while authenticating your request: %v", err)
+		processError(errMsg, 401, w)
+		return
 	}
 
 	var body requestBody
@@ -212,16 +241,9 @@ func (c *apiConfig) handlerCreateChirp(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	u, err := c.db.GetUserByID(req.Context(), body.UserID)
-	if err != nil {
-		errMsg := fmt.Sprintf("Something went wrong while retrieving the referenced user: %v", err)
-		processError(errMsg, 500, w)
-		return
-	}
-
 	chirpParams := database.CreateChirpParams{
 		Body:   cleanChirp(body.Body),
-		UserID: u.ID,
+		UserID: uid,
 	}
 	ch, err := c.db.CreateChirp(req.Context(), chirpParams)
 	if err != nil {
@@ -336,6 +358,7 @@ func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
 	env := os.Getenv("PLATFORM")
+	authSecret := os.Getenv("JWT_SECRET")
 
 	config.env = env
 
@@ -346,6 +369,8 @@ func main() {
 	}
 	dbQueries := database.New(db)
 	config.db = dbQueries
+
+	config.authSecret = authSecret
 
 	mux := http.NewServeMux()
 	server := http.Server{

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
@@ -282,5 +283,92 @@ func TestPasswordHashRoundTrip(t *testing.T) {
 
 	if !match {
 		t.Error("Round trip failed: password does not match hash")
+	}
+}
+
+func TestGetBearerToken(t *testing.T) {
+	tests := []struct {
+		name      string
+		headers   http.Header
+		wantToken string
+		wantErr   bool
+	}{
+		{
+			name: "valid bearer token",
+			headers: http.Header{
+				"Authorization": []string{"Bearer abc123token"},
+			},
+			wantToken: "abc123token",
+			wantErr:   false,
+		},
+		{
+			name: "valid bearer token with jwt format",
+			headers: http.Header{
+				"Authorization": []string{"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"},
+			},
+			wantToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+			wantErr:   false,
+		},
+		{
+			name: "missing authorization header",
+			headers: http.Header{
+				"Content-Type": []string{"application/json"},
+			},
+			wantToken: "",
+			wantErr:   true,
+		},
+		{
+			name: "missing Bearer prefix",
+			headers: http.Header{
+				"Authorization": []string{"abc123token"},
+			},
+			wantToken: "",
+			wantErr:   true,
+		},
+		{
+			name: "wrong auth scheme",
+			headers: http.Header{
+				"Authorization": []string{"Basic dXNlcjpwYXNz"},
+			},
+			wantToken: "",
+			wantErr:   true,
+		},
+		{
+			name: "Bearer prefix only, no token",
+			headers: http.Header{
+				"Authorization": []string{"Bearer "},
+			},
+			wantToken: "",
+			wantErr:   true,
+		},
+		{
+			name: "empty authorization header",
+			headers: http.Header{
+				"Authorization": []string{""},
+			},
+			wantToken: "",
+			wantErr:   true,
+		},
+		{
+			name: "case sensitivity check",
+			headers: http.Header{
+				"Authorization": []string{"bearer abc123token"},
+			},
+			wantToken: "",
+			wantErr:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotToken, err := GetBearerToken(tt.headers)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("GetBearerToken() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if gotToken != tt.wantToken {
+				t.Errorf("GetBearerToken() = %v, want %v", gotToken, tt.wantToken)
+			}
+		})
 	}
 }
