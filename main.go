@@ -454,14 +454,37 @@ func (c *apiConfig) handlerCreateChirp(w http.ResponseWriter, req *http.Request)
 func (c *apiConfig) handlerGetChirps(w http.ResponseWriter, req *http.Request) {
 	var respBody []chirpResponse
 
-	ch, err := c.db.GetAllChirps(req.Context())
-	if err != nil {
-		errMsg := fmt.Sprintf("Something went wrong while retrieving chirps: %v", err)
-		processError(errMsg, 500, w)
+	authorIDFilter := req.URL.Query().Get("author_id")
+	if len(authorIDFilter) < 1 {
+		errMsg := "Something went wrong handling the request, expected chirp id in request path"
+		processError(errMsg, 400, w)
 		return
 	}
+	parsedAuthorID, err := uuid.Parse(authorIDFilter)
+	if err != nil {
+		errMsg := fmt.Sprintf("Something went wrong when processing the chirp ID: %v", err)
+		processError(errMsg, 400, w)
+		return
+	}
+	var chirps []database.Chirp
 
-	for _, chirp := range ch {
+	if len(authorIDFilter) > 0 {
+		chirps, err = c.db.GetFilteredChirps(req.Context(), parsedAuthorID)
+		if err != nil {
+			errMsg := fmt.Sprintf("Something went wrong while retrieving chirps: %v", err)
+			processError(errMsg, 500, w)
+			return
+		}
+	} else {
+		chirps, err = c.db.GetAllChirps(req.Context())
+		if err != nil {
+			errMsg := fmt.Sprintf("Something went wrong while retrieving chirps: %v", err)
+			processError(errMsg, 500, w)
+			return
+		}
+	}
+
+	for _, chirp := range chirps {
 		entry := chirpResponse{
 			ID:        chirp.ID,
 			CreatedAt: chirp.CreatedAt,
