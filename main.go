@@ -35,10 +35,11 @@ type chirpResponse struct {
 }
 
 type userResponseBody struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
+	ID          uuid.UUID `json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Email       string    `json:"email"`
+	IsChirpyRed bool      `json:"is_chirpy_red"`
 }
 
 type authRequestPayload struct {
@@ -111,6 +112,49 @@ func (c *apiConfig) handlerReset(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(200)
 }
 
+func (c *apiConfig) handlerPolkaWebhooks(w http.ResponseWriter, req *http.Request) {
+	type polkaWebhookBody struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserID string `json:"user_id"`
+		}
+	}
+	var reqBody polkaWebhookBody
+	dec := json.NewDecoder(req.Body)
+	if err := dec.Decode(&reqBody); err != nil {
+		processError("Something went wrong while processing request body", 400, w)
+		return
+	}
+
+	if reqBody.Event != "user.upgraded" {
+		w.WriteHeader(204)
+		return
+	}
+
+	if len(reqBody.Data.UserID) < 1 {
+		errMsg := "Something went wrong handling the request, expected user id in request"
+		processError(errMsg, 400, w)
+		return
+	}
+	uid, err := uuid.Parse(reqBody.Data.UserID)
+	if err != nil {
+		errMsg := fmt.Sprintf("Something went wrong when processing the user ID: %v", err)
+		processError(errMsg, 400, w)
+		return
+	}
+
+	if err := c.db.UpgradeUser(req.Context(), uid); err != nil {
+		errMsg := fmt.Sprintf("Something went wrong when upgrading your user: %v", err)
+		errorCode := 500
+		if errors.Is(err, sql.ErrNoRows) {
+			errorCode = 404
+		}
+		processError(errMsg, errorCode, w)
+		return
+	}
+	w.WriteHeader(204)
+}
+
 func (c *apiConfig) handlerCreateUser(w http.ResponseWriter, req *http.Request) {
 	var reqBody authRequestPayload
 	dec := json.NewDecoder(req.Body)
@@ -139,10 +183,11 @@ func (c *apiConfig) handlerCreateUser(w http.ResponseWriter, req *http.Request) 
 	}
 
 	out := userResponseBody{
-		ID:        u.ID,
-		CreatedAt: u.CreatedAt,
-		UpdatedAt: u.UpdatedAt,
-		Email:     u.Email,
+		ID:          u.ID,
+		CreatedAt:   u.CreatedAt,
+		UpdatedAt:   u.UpdatedAt,
+		Email:       u.Email,
+		IsChirpyRed: u.IsChirpyRed,
 	}
 	d, err := json.Marshal(out)
 	if err != nil {
@@ -200,10 +245,11 @@ func (c *apiConfig) handlerUpdateUser(w http.ResponseWriter, req *http.Request) 
 	}
 
 	out := userResponseBody{
-		ID:        u.ID,
-		CreatedAt: u.CreatedAt,
-		UpdatedAt: u.UpdatedAt,
-		Email:     u.Email,
+		ID:          u.ID,
+		CreatedAt:   u.CreatedAt,
+		UpdatedAt:   u.UpdatedAt,
+		Email:       u.Email,
+		IsChirpyRed: u.IsChirpyRed,
 	}
 	d, err := json.Marshal(out)
 	if err != nil {
@@ -264,10 +310,11 @@ func (c *apiConfig) handlerLogin(w http.ResponseWriter, req *http.Request) {
 
 	resp := loginResponseBody{
 		userResponseBody: userResponseBody{
-			ID:        u.ID,
-			CreatedAt: u.CreatedAt,
-			UpdatedAt: u.UpdatedAt,
-			Email:     u.Email,
+			ID:          u.ID,
+			CreatedAt:   u.CreatedAt,
+			UpdatedAt:   u.UpdatedAt,
+			Email:       u.Email,
+			IsChirpyRed: u.IsChirpyRed,
 		},
 		Token:        token,
 		RefreshToken: refreshToken,
@@ -560,6 +607,7 @@ func main() {
 	mux.Handle("/app/", config.middlewareMetricsInc(fileserverHandler))
 
 	mux.HandleFunc("GET /api/healthz", handlerHealth)
+	mux.HandleFunc("POST /api/polka/webhooks", config.handlerPolkaWebhooks)
 	mux.HandleFunc("POST /api/users", config.handlerCreateUser)
 	mux.HandleFunc("PUT /api/users", config.handlerUpdateUser)
 	mux.HandleFunc("POST /api/login", config.handlerLogin)

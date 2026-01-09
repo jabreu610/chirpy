@@ -7,7 +7,7 @@ VALUES (
     $1,
     $2
 )
-RETURNING id, created_at, updated_at, email;
+RETURNING id, created_at, updated_at, email, is_chirpy_red;
 
 -- name: GetUserByID :one
 SELECT *
@@ -26,4 +26,9 @@ WHERE email = $1;
 UPDATE users
 SET email = $1, hashed_password = $2
 WHERE id = $3
-RETURNING id, created_at, updated_at, email;
+RETURNING id, created_at, updated_at, email, is_chirpy_red;
+
+-- name: UpgradeUser :exec
+UPDATE users
+SET is_chirpy_red = true
+WHERE id = $1;
