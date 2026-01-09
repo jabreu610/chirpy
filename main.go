@@ -155,6 +155,67 @@ func (c *apiConfig) handlerCreateUser(w http.ResponseWriter, req *http.Request) 
 	w.Write(d)
 }
 
+func (c *apiConfig) handlerUpdateUser(w http.ResponseWriter, req *http.Request) {
+	type userCredentialsUpdateBody struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		errMsg := fmt.Sprintf("Something went wrong while authenticating your request: %v", err)
+		processError(errMsg, 401, w)
+		return
+	}
+	uid, err := auth.ValidateJWT(token, c.authSecret)
+	if err != nil {
+		errMsg := fmt.Sprintf("Something went wrong while authenticating your request: %v", err)
+		processError(errMsg, 401, w)
+		return
+	}
+
+	var reqBody userCredentialsUpdateBody
+	dec := json.NewDecoder(req.Body)
+	if err := dec.Decode(&reqBody); err != nil {
+		processError("Something went wrong while processing request body", 400, w)
+		return
+	}
+
+	h, err := auth.HashPassword(reqBody.Password)
+	if err != nil {
+		errMsg := fmt.Sprintf("Something went wrong while processing your request: %v", err)
+		processError(errMsg, 400, w)
+		return
+	}
+
+	params := database.UpdateUserCredentialsParams{
+		Email:          reqBody.Email,
+		HashedPassword: h,
+		ID:             uid,
+	}
+	u, err := c.db.UpdateUserCredentials(req.Context(), params)
+	if err != nil {
+		errMsg := fmt.Sprintf("Unable to update user: %v", err)
+		processError(errMsg, 500, w)
+		return
+	}
+
+	out := userResponseBody{
+		ID:        u.ID,
+		CreatedAt: u.CreatedAt,
+		UpdatedAt: u.UpdatedAt,
+		Email:     u.Email,
+	}
+	d, err := json.Marshal(out)
+	if err != nil {
+		errMsg := fmt.Sprintf("Something went wrong while processing repsone: %v", err)
+		processError(errMsg, 500, w)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	w.Write(d)
+}
+
 func (c *apiConfig) handlerLogin(w http.ResponseWriter, req *http.Request) {
 	var reqBody authRequestPayload
 	dec := json.NewDecoder(req.Body)
@@ -449,6 +510,7 @@ func main() {
 
 	mux.HandleFunc("GET /api/healthz", handlerHealth)
 	mux.HandleFunc("POST /api/users", config.handlerCreateUser)
+	mux.HandleFunc("PUT /api/users", config.handlerUpdateUser)
 	mux.HandleFunc("POST /api/login", config.handlerLogin)
 	mux.HandleFunc("POST /api/refresh", config.handlerRefreshAuth)
 	mux.HandleFunc("POST /api/revoke", config.handlerRevoke)
