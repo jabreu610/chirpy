@@ -81,6 +81,7 @@ type apiConfig struct {
 	db             *database.Queries
 	env            string
 	authSecret     string
+	polkaAPIKey    string
 }
 
 func (c *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -113,6 +114,12 @@ func (c *apiConfig) handlerReset(w http.ResponseWriter, req *http.Request) {
 }
 
 func (c *apiConfig) handlerPolkaWebhooks(w http.ResponseWriter, req *http.Request) {
+	apiKey, err := auth.GetAPIKey(req.Header)
+	if err != nil || apiKey != c.polkaAPIKey {
+		processError("Unauthorized", 401, w)
+		return
+	}
+
 	type polkaWebhookBody struct {
 		Event string `json:"event"`
 		Data  struct {
@@ -584,8 +591,10 @@ func main() {
 	dbURL := os.Getenv("DB_URL")
 	env := os.Getenv("PLATFORM")
 	authSecret := os.Getenv("JWT_SECRET")
+	polkaAPIKey := os.Getenv("POLKA_KEY")
 
 	config.env = env
+	config.polkaAPIKey = polkaAPIKey
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
