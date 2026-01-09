@@ -42,9 +42,8 @@ type userResponseBody struct {
 }
 
 type authRequestPayload struct {
-	Email            string        `json:"email"`
-	Password         string        `json:"password"`
-	ExpiresInSeconds time.Duration `json:"expires_in_seconds"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 type errorBody struct {
@@ -176,12 +175,7 @@ func (c *apiConfig) handlerLogin(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	expiration := reqBody.ExpiresInSeconds * time.Second
-	if expiration == 0 {
-		expiration = 3600 * time.Second
-	}
-
-	token, err := auth.MakeJWT(u.ID, c.authSecret, expiration)
+	token, err := auth.MakeJWT(u.ID, c.authSecret, 3600*time.Second)
 	if err != nil {
 		processError("Incorrect email or password", 401, w)
 		return
@@ -189,7 +183,22 @@ func (c *apiConfig) handlerLogin(w http.ResponseWriter, req *http.Request) {
 
 	type loginResponseBody struct {
 		userResponseBody
-		Token string `json:"token"`
+		Token        string `json:"token"`
+		RefreshToken string `json:"refresh_token"`
+	}
+
+	refreshToken, err := auth.MakeRefreshToken()
+	if err != nil {
+		processError("Incorrect email or password", 401, w)
+		return
+	}
+	params := database.StoreRefreshTokenParams{
+		Token:  refreshToken,
+		UserID: u.ID,
+	}
+	if _, err := c.db.StoreRefreshToken(req.Context(), params); err != nil {
+		processError("Incorrect email or password", 401, w)
+		return
 	}
 
 	resp := loginResponseBody{
@@ -199,7 +208,8 @@ func (c *apiConfig) handlerLogin(w http.ResponseWriter, req *http.Request) {
 			UpdatedAt: u.UpdatedAt,
 			Email:     u.Email,
 		},
-		Token: token,
+		Token:        token,
+		RefreshToken: refreshToken,
 	}
 	d, err := json.Marshal(resp)
 	if err != nil {
@@ -210,6 +220,62 @@ func (c *apiConfig) handlerLogin(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
 	w.Write(d)
+}
+
+func (c *apiConfig) handlerRefreshAuth(w http.ResponseWriter, req *http.Request) {
+	refreshTokenInput, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		errMsg := fmt.Sprintf("Something went wrong while authenticating your request: %v", err)
+		processError(errMsg, 401, w)
+		return
+	}
+
+	r, err := c.db.GetRefreshToken(req.Context(), refreshTokenInput)
+	if err != nil || r.RevokedAt.Valid || r.ExpiresAt.Before(time.Now()) {
+		processError("Refresh token is expired", 401, w)
+		return
+	}
+
+	token, err := auth.MakeJWT(r.UserID, c.authSecret, 3600*time.Second)
+	if err != nil {
+		errMsg := fmt.Sprintf("Something went wrong while authenticating your request: %v", err)
+		processError(errMsg, 401, w)
+		return
+	}
+
+	type authRefreshResponseBody struct {
+		Token string `json:"token"`
+	}
+
+	resp := authRefreshResponseBody{
+		Token: token,
+	}
+	d, err := json.Marshal(resp)
+	if err != nil {
+		errMsg := fmt.Sprintf("Something went wrong while authenticating your request: %v", err)
+		processError(errMsg, 401, w)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	w.Write(d)
+}
+
+func (c *apiConfig) handlerRevoke(w http.ResponseWriter, req *http.Request) {
+	refreshTokenInput, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		errMsg := fmt.Sprintf("Something went wrong while processing your request: %v", err)
+		processError(errMsg, 401, w)
+		return
+	}
+
+	if err := c.db.RevokeRefreshToken(req.Context(), refreshTokenInput); err != nil {
+		errMsg := fmt.Sprintf("Something went wrong while processing your request: %v", err)
+		processError(errMsg, 401, w)
+		return
+	}
+	w.WriteHeader(204)
 }
 
 func (c *apiConfig) handlerCreateChirp(w http.ResponseWriter, req *http.Request) {
@@ -384,6 +450,8 @@ func main() {
 	mux.HandleFunc("GET /api/healthz", handlerHealth)
 	mux.HandleFunc("POST /api/users", config.handlerCreateUser)
 	mux.HandleFunc("POST /api/login", config.handlerLogin)
+	mux.HandleFunc("POST /api/refresh", config.handlerRefreshAuth)
+	mux.HandleFunc("POST /api/revoke", config.handlerRevoke)
 	mux.HandleFunc("POST /api/chirps", config.handlerCreateChirp)
 	mux.HandleFunc("GET /api/chirps", config.handlerGetChirps)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", config.handlerGetChirpByID)
