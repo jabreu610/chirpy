@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -453,19 +454,24 @@ func (c *apiConfig) handlerCreateChirp(w http.ResponseWriter, req *http.Request)
 
 func (c *apiConfig) handlerGetChirps(w http.ResponseWriter, req *http.Request) {
 	var respBody []chirpResponse
+	q := req.URL.Query()
+	authorIDFilter := q.Get("author_id")
+	var parsedAuthorID uuid.UUID
+	var err error
+	if len(authorIDFilter) > 0 {
+		parsedAuthorID, err = uuid.Parse(authorIDFilter)
+		if err != nil {
+			errMsg := fmt.Sprintf("Something went wrong when processing the query parameter: %v", err)
+			processError(errMsg, 400, w)
+			return
+		}
+	}
 
-	authorIDFilter := req.URL.Query().Get("author_id")
-	if len(authorIDFilter) < 1 {
-		errMsg := "Something went wrong handling the request, expected chirp id in request path"
-		processError(errMsg, 400, w)
-		return
+	sortFilter := q.Get("sort")
+	if len(sortFilter) < 1 || sortFilter != "desc" {
+		sortFilter = "asc"
 	}
-	parsedAuthorID, err := uuid.Parse(authorIDFilter)
-	if err != nil {
-		errMsg := fmt.Sprintf("Something went wrong when processing the chirp ID: %v", err)
-		processError(errMsg, 400, w)
-		return
-	}
+
 	var chirps []database.Chirp
 
 	if len(authorIDFilter) > 0 {
@@ -494,6 +500,14 @@ func (c *apiConfig) handlerGetChirps(w http.ResponseWriter, req *http.Request) {
 		}
 		respBody = append(respBody, entry)
 	}
+
+	slices.SortFunc(respBody, func(a, b chirpResponse) int {
+		if sortFilter == "asc" {
+			return a.CreatedAt.Compare(b.CreatedAt)
+		} else {
+			return b.CreatedAt.Compare(a.CreatedAt)
+		}
+	})
 
 	d, err := json.Marshal(respBody)
 	if err != nil {
